@@ -1,0 +1,2 @@
+dependencies:
+  espressif/pid_ctrl: "^0.2.0"

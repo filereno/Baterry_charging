@@ -1,0 +1,20 @@
+dependencies:
+  espressif/pid_ctrl:
+    component_hash: 22af0226d7adbea821e4c1a8c1fa5dad23c883eb7457e95e19342883a37c44a3
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.4'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 0.2.0
+  idf:
+    source:
+      type: idf
+    version: 6.0.1
+direct_dependencies:
+- espressif/pid_ctrl
+manifest_hash: 3c4b6e22bd529d6f7f1288d585c66066d661920875967886f5c0a73b0efbabeb
+target: esp32
+version: 3.0.0
