@@ -68,6 +68,7 @@ void pwm_inicializar(int pino_alto, int pino_baixo) {
 
     /* --- 5. AÇÕES DE COMUTAÇÃO -------------------------------------------- */
     // High-side: HIGH no zero do timer, LOW no comparador
+    // Não configuramos o s_gen_low aqui, pois o módulo Dead Time fará isso automaticamente.
     ESP_ERROR_CHECK(mcpwm_generator_set_action_on_timer_event(s_gen_high,
         MCPWM_GEN_TIMER_EVENT_ACTION(MCPWM_TIMER_DIRECTION_UP,
                                      MCPWM_TIMER_EVENT_EMPTY,
@@ -76,16 +77,6 @@ void pwm_inicializar(int pino_alto, int pino_baixo) {
         MCPWM_GEN_COMPARE_EVENT_ACTION(MCPWM_TIMER_DIRECTION_UP,
                                         s_comparator,
                                         MCPWM_GEN_ACTION_LOW)));
-
-    // Low-side: complementar — LOW no zero, HIGH no comparador
-    ESP_ERROR_CHECK(mcpwm_generator_set_action_on_timer_event(s_gen_low,
-        MCPWM_GEN_TIMER_EVENT_ACTION(MCPWM_TIMER_DIRECTION_UP,
-                                     MCPWM_TIMER_EVENT_EMPTY,
-                                     MCPWM_GEN_ACTION_LOW)));
-    ESP_ERROR_CHECK(mcpwm_generator_set_action_on_compare_event(s_gen_low,
-        MCPWM_GEN_COMPARE_EVENT_ACTION(MCPWM_TIMER_DIRECTION_UP,
-                                        s_comparator,
-                                        MCPWM_GEN_ACTION_HIGH)));
 
     /* --- 6. DEAD-TIME ------------------------------------------------------ */
     /*
@@ -106,11 +97,11 @@ void pwm_inicializar(int pino_alto, int pino_baixo) {
      * (inverte porque o low-side liga no comparador, não no zero)
      */
     mcpwm_dead_time_config_t dt_low = {
-        .posedge_delay_ticks = PWM_DEADTIME_TICKS,
-        .negedge_delay_ticks = 0,
+        .posedge_delay_ticks = 0,
+        .negedge_delay_ticks = PWM_DEADTIME_TICKS,
         .flags.invert_output = true,
     };
-    ESP_ERROR_CHECK(mcpwm_generator_set_dead_time(s_gen_low, s_gen_low, &dt_low));
+    ESP_ERROR_CHECK(mcpwm_generator_set_dead_time(s_gen_high, s_gen_low, &dt_low));
 
     /* --- 7. START ---------------------------------------------------------- */
     ESP_ERROR_CHECK(mcpwm_timer_enable(s_timer));

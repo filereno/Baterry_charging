@@ -278,4 +278,4 @@ void app_main(void) {                                           // Função inic
                  tensaoBateria, correnteCarga, temperaturaAtual, dutyCycleAtual);   // Termina o preenchimento da formatação da string fornecendo a totalidade das referências físicas vitais que guiam a calibração final por parte do construtor.
         vTaskDelay(pdMS_TO_TICKS(500));         
     }                                   
-}                                       
+} 
