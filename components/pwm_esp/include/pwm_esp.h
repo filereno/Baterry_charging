@@ -23,9 +23,9 @@
  * PARÂMETROS DE PWM
  * ============================================================================ */
 #define PWM_FREQ_HZ          50000      // Frequência de chaveamento: 50 kHz
-#define PWM_RESOLUTION_HZ    1000000    // Resolução interna do timer: 1 MHz
+#define PWM_RESOLUTION_HZ    40000000   // Resolução interna do timer: 40 MHz
 #define PWM_PERIOD_TICKS     (PWM_RESOLUTION_HZ / PWM_FREQ_HZ)  // 20 ticks
-#define PWM_DEADTIME_TICKS   5          // Dead-time: 5 ticks = 5 µs
+#define PWM_DEADTIME_TICKS   40          // Dead-time: 40 ticks = 1 µs a 40MHz
 #define PWM_MAX_DUTY_PCT     95.0f      // Máx. duty (protege o capacitor bootstrap)
 #define PWM_MIN_DUTY_PCT     0.0f       // Mín. duty
 

@@ -26,7 +26,8 @@
 
 // Componentes customizados                  
 #include "pwm_esp.h"             
-#include "controle_pid.h"        
+#include "controle_pid.h" 
+#include "analisador_vcd.h"       
 
 static const char *TAG = "CARREGADOR"; 
 
@@ -120,27 +121,57 @@ static void init_i2c(void) {
     }
 }   
 
+// static int16_t ler_ads1115(uint8_t canal) { 
+//     uint8_t mux;                            
+//     switch (canal) {                        
+//         // Usa final '5' para forçar a matemática do chip simulado a usar a escala de 2.048V
+//         case 0:  mux = 0xC5; break; // AIN0 vs GND 
+//         case 1:  mux = 0xD5; break; // AIN1 vs GND                          
+//         default: mux = 0xE5; break; // AIN2 vs GND                          
+//     }                                       
+//     uint8_t cfg[3] = { 0x01, mux, 0x83 };   
+
+//     // 1. Envia a configuração
+//     i2c_master_write_to_device(I2C_MASTER_NUM, ADS1115_ADDR, cfg, 3, pdMS_TO_TICKS(100));   
+    
+//     // Aguarda o tempo físico da conversão
+//     vTaskDelay(pdMS_TO_TICKS(2));                                                           
+
+//     // 2. Aponta para o registrador e lê os dados numa ÚNICA transação contínua
+//     uint8_t reg = 0x00;                                                                     
+//     uint8_t data[2] = {0};                                                                  
+    
+//     i2c_master_write_read_device(I2C_MASTER_NUM, ADS1115_ADDR, &reg, 1, data, 2, pdMS_TO_TICKS(100));
+
+//     return (int16_t)((data[0] << 8) | data[1]);                                             
+// }
+
+
 static int16_t ler_ads1115(uint8_t canal) { 
     uint8_t mux;                            
     switch (canal) {                        
-        // Usa final '5' para forçar a matemática do chip simulado a usar a escala de 2.048V
-        case 0:  mux = 0xC5; break; // AIN0 vs GND 
-        case 1:  mux = 0xD5; break; // AIN1 vs GND                          
-        default: mux = 0xE5; break; // AIN2 vs GND                          
+        // Mantemos o final '5' para forçar a escala de 2.048V
+        case 0:  mux = 0xC5; break; 
+        case 1:  mux = 0xD5; break;                          
+        default: mux = 0xE5; break;                          
     }                                       
+    
+    // Passo 1: Envia a configuração do canal
     uint8_t cfg[3] = { 0x01, mux, 0x83 };   
-
-    // 1. Envia a configuração
     i2c_master_write_to_device(I2C_MASTER_NUM, ADS1115_ADDR, cfg, 3, pdMS_TO_TICKS(100));   
     
-    // Aguarda o tempo físico da conversão
-    vTaskDelay(pdMS_TO_TICKS(2));                                                           
+    // Passo 2: O Segredo da Adafruit (Atraso de Conversão)
+    // Usamos 10ms para garantir que o FreeRTOS conte pelo menos 1 tick completo.
+    // Isso dá tempo ao ADS1115 simulado para preencher o registrador.
+    vTaskDelay(pdMS_TO_TICKS(10));                                                           
 
-    // 2. Aponta para o registrador e lê os dados numa ÚNICA transação contínua
+    // Passo 3: Aponta o ponteiro para o registrador de leitura (0x00) e fecha a transação
     uint8_t reg = 0x00;                                                                     
+    i2c_master_write_to_device(I2C_MASTER_NUM, ADS1115_ADDR, &reg, 1, pdMS_TO_TICKS(100));
+
+    // Passo 4: Abre uma comunicação nova e limpa para ler os dados
     uint8_t data[2] = {0};                                                                  
-    
-    i2c_master_write_read_device(I2C_MASTER_NUM, ADS1115_ADDR, &reg, 1, data, 2, pdMS_TO_TICKS(100));
+    i2c_master_read_from_device(I2C_MASTER_NUM, ADS1115_ADDR, data, 2, pdMS_TO_TICKS(100));
 
     return (int16_t)((data[0] << 8) | data[1]);                                             
 }
@@ -269,7 +300,9 @@ void app_main(void) {
 
     ESP_LOGI(TAG, "Sistema pronto. Aguardando bateria...");         
     printf("Sistema pronto. Aguardando bateria...\n\n"); 
-    
+    //Analisador logico interno para capturar sinais do pwm
+    static bool ja_capturou_sinal = false;
+
     while (1) {                                                     
         tensaoBateria    = ads_para_tensao(ler_ads1115(0));         
         correnteCarga    = ads_para_corrente(ler_ads1115(1));       

@@ -1,10 +1,11 @@
 {
   "C_Cpp.intelliSenseEngine": "default",
   "idf.openOcdConfigs": [
-    "board/esp32-wrover-kit-3.3v.cfg"
+    "interface/ftdi/esp32_devkitj_v1.cfg",
+    "target/esp32.cfg"
   ],
   "idf.port": "detect",
-  "idf.currentSetup": "/home/filereno/.espressif/v6.0.1/esp-idf",
+  "idf.currentSetup": "/home/fabiano/.espressif/v6.0.1/esp-idf",
   "idf.customExtraVars": {
     "IDF_TARGET": "esp32"
   },
