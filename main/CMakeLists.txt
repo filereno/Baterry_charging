@@ -5,4 +5,6 @@ idf_component_register(
         driver
         controle_pid
         pwm_esp
+        nvs_flash
+        ble_esp
 )

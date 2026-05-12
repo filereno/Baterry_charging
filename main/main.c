@@ -1,16 +1,17 @@
 /*
  * ==============================================================================
- * ARQUIVO: main.c
+ * FICHEIRO: main.c
  * PROJETO: TEST_BATERRY — Carregador/Testador de Baterias NiCd
  *
  * COMPONENTES USADOS:
- * - pwm_esp      : Driver PWM síncrono (MCPWM) para o buck converter
+ * - pwm_esp      : Driver PWM síncrono (MCPWM) para o conversor buck
  * - controle_pid : Controlador PID de corrente
+ * - analisador_vcd: Captura de sinais lógicos
  *
  * CANAIS ADS1115 (I2C, endereço 0x48):
- * AIN0 → Tensão da bateria (via divisor resistivo)
- * AIN1 → Corrente de carga (via shunt + amplificador)
- * AIN2 → Temperatura NTC 10kΩ (via divisor resistivo)
+ * AIN0 → Temperatura NTC 10kΩ (Filtro Passa-Baixa aplicado)
+ * AIN1 → Tensão da bateria (via divisor resistivo)
+ * AIN2 → Corrente de carga (via shunt)
  * ==============================================================================
  */
 
@@ -22,12 +23,14 @@
 #include "driver/gpio.h"         
 #include "driver/i2c.h"          
 #include "esp_log.h"             
-#include "esp_err.h"             // Incluído para tratamento de erros do I2C
+#include "esp_err.h"    
+#include "nvs_flash.h"    
+#include "ble_esp.h"    // A nossa biblioteca Bluetooth     
 
 // Componentes customizados                  
 #include "pwm_esp.h"             
 #include "controle_pid.h" 
-#include "analisador_vcd.h"       
+//#include "analisador_vcd.h"       
 
 static const char *TAG = "CARREGADOR"; 
 
@@ -51,15 +54,16 @@ static const char *TAG = "CARREGADOR";
 #define ADS1115_LSB_V     0.0000625f    
 
 /* ============================================================================
- * FATORES DE CONVERSÃO DOS SENSORES
+ * FATORES DE CONVERSÃO DOS SENSORES E FILTROS
  * ============================================================================ */
 #define SENSOR_V_DIVISOR    2.0f        
 #define SENSOR_SHUNT_OHM    0.1f        
-#define SENSOR_AMP_GANHO    10.0f       
+#define SENSOR_AMP_GANHO    1.0f        // Ajustar consoante o uso (ou não) do LM358
 #define SENSOR_NTC_BETA     3950.0f     
 #define SENSOR_NTC_R25      10000.0f    
 #define SENSOR_R_SERIE      10000.0f    
 #define SENSOR_VCC          3.3f        
+#define FILTRO_ALFA         0.8f        // Fator de suavização (EMA)     
 
 /* ============================================================================
  * PARÂMETROS DE CARGA NiCd
@@ -86,11 +90,11 @@ typedef enum {
 static EstadoSistema estadoAtual = DESCONECTADO; 
 
 /* Medições globais */
-static float tensaoBateria   = 0.0f;    
-static float tensaoMaxima    = 0.0f;    
-static float correnteCarga   = 0.0f;    
+static float tensaoBateria    = 0.0f;    
+static float tensaoMaxima     = 0.0f;    
+static float correnteCarga    = 0.0f;    
 static float temperaturaAtual = 0.0f;   
-static float dutyCycleAtual  = 0.0f;    
+static float dutyCycleAtual   = 0.0f;    
 
 /* ============================================================================
  * I2C / ADS1115
@@ -109,67 +113,48 @@ static void init_i2c(void) {
     
     ESP_LOGI(TAG, "I2C pronto: SDA=%d SCL=%d", PINO_SDA, PINO_SCL);             
     
-    // --- TESTE DE COMUNICAÇÃO (PING I2C) ---
     printf("\nExecutando PING I2C no endereco 0x%02X...\n", ADS1115_ADDR);
     uint8_t ponteiro_teste = 0x00;
     esp_err_t resposta = i2c_master_write_to_device(I2C_MASTER_NUM, ADS1115_ADDR, &ponteiro_teste, 1, pdMS_TO_TICKS(100));
     
     if (resposta == ESP_OK) {
-        printf("=> SUCESSO: Chip ADS1115 detectado e respondendo!\n\n");
+        printf("=> SUCESSO: Chip ADS1115 detetado e a responder!\n\n");
     } else {
-        printf("=> ERRO GRAVE: Chip ADS1115 NAO respondeu. Codigo do erro: %d\n\n", resposta);
+        printf("=> ERRO GRAVE: Chip ADS1115 NAO respondeu. Codigo: %d\n\n", resposta);
     }
 }   
 
-// static int16_t ler_ads1115(uint8_t canal) { 
-//     uint8_t mux;                            
-//     switch (canal) {                        
-//         // Usa final '5' para forçar a matemática do chip simulado a usar a escala de 2.048V
-//         case 0:  mux = 0xC5; break; // AIN0 vs GND 
-//         case 1:  mux = 0xD5; break; // AIN1 vs GND                          
-//         default: mux = 0xE5; break; // AIN2 vs GND                          
-//     }                                       
-//     uint8_t cfg[3] = { 0x01, mux, 0x83 };   
-
-//     // 1. Envia a configuração
-//     i2c_master_write_to_device(I2C_MASTER_NUM, ADS1115_ADDR, cfg, 3, pdMS_TO_TICKS(100));   
-    
-//     // Aguarda o tempo físico da conversão
-//     vTaskDelay(pdMS_TO_TICKS(2));                                                           
-
-//     // 2. Aponta para o registrador e lê os dados numa ÚNICA transação contínua
-//     uint8_t reg = 0x00;                                                                     
-//     uint8_t data[2] = {0};                                                                  
-    
-//     i2c_master_write_read_device(I2C_MASTER_NUM, ADS1115_ADDR, &reg, 1, data, 2, pdMS_TO_TICKS(100));
-
-//     return (int16_t)((data[0] << 8) | data[1]);                                             
-// }
-
-
+// Função com Polling Assíncrono para evitar crosstalk entre canais
 static int16_t ler_ads1115(uint8_t canal) { 
-    uint8_t mux;                            
+    uint8_t config_msb = 0x00;                            
     switch (canal) {                        
-        // Mantemos o final '5' para forçar a escala de 2.048V
-        case 0:  mux = 0xC5; break; 
-        case 1:  mux = 0xD5; break;                          
-        default: mux = 0xE5; break;                          
+        case 0:  config_msb = 0xC5; break; // AIN0 (NTC / Temperatura)
+        case 1:  config_msb = 0xD5; break; // AIN1 (Tensão)                         
+        case 2:  config_msb = 0xE5; break; // AIN2 (Corrente)
+        default: config_msb = 0xC5; break;                         
     }                                       
     
-    // Passo 1: Envia a configuração do canal
-    uint8_t cfg[3] = { 0x01, mux, 0x83 };   
+    // LSB: Ajusta a taxa de amostragem (860 SPS) e desativa comparador (0xE3)
+    uint8_t config_lsb = 0xE3; 
+
+    // 1. Inicia a conversão no canal escolhido
+    uint8_t cfg[3] = { 0x01, config_msb, config_lsb };   
     i2c_master_write_to_device(I2C_MASTER_NUM, ADS1115_ADDR, cfg, 3, pdMS_TO_TICKS(100));   
     
-    // Passo 2: O Segredo da Adafruit (Atraso de Conversão)
-    // Usamos 10ms para garantir que o FreeRTOS conte pelo menos 1 tick completo.
-    // Isso dá tempo ao ADS1115 simulado para preencher o registrador.
-    vTaskDelay(pdMS_TO_TICKS(10));                                                           
+    // 2. Loop de Polling (Espera Inteligente)
+    uint8_t reg_pointer = 0x01;
+    i2c_master_write_to_device(I2C_MASTER_NUM, ADS1115_ADDR, &reg_pointer, 1, pdMS_TO_TICKS(100));
+    
+    uint8_t status[2] = {0};
+    do {
+        vTaskDelay(1); // Cede processamento ao FreeRTOS
+        i2c_master_read_from_device(I2C_MASTER_NUM, ADS1115_ADDR, status, 2, pdMS_TO_TICKS(100));
+    } while ((status[0] & 0x80) == 0); // Sai do loop quando MSB = 1 (Conversão pronta)                                                           
 
-    // Passo 3: Aponta o ponteiro para o registrador de leitura (0x00) e fecha a transação
-    uint8_t reg = 0x00;                                                                     
-    i2c_master_write_to_device(I2C_MASTER_NUM, ADS1115_ADDR, &reg, 1, pdMS_TO_TICKS(100));
+    // 3. Lê os dados com segurança
+    reg_pointer = 0x00;                                                                     
+    i2c_master_write_to_device(I2C_MASTER_NUM, ADS1115_ADDR, &reg_pointer, 1, pdMS_TO_TICKS(100));
 
-    // Passo 4: Abre uma comunicação nova e limpa para ler os dados
     uint8_t data[2] = {0};                                                                  
     i2c_master_read_from_device(I2C_MASTER_NUM, ADS1115_ADDR, data, 2, pdMS_TO_TICKS(100));
 
@@ -187,11 +172,12 @@ static float ads_para_corrente(int16_t raw) {
     return (raw * ADS1115_LSB_V) / (SENSOR_SHUNT_OHM * SENSOR_AMP_GANHO);   
 }                                       
 
-static float ads_para_temperatura(int16_t raw) {                                    
-    float v = raw * ADS1115_LSB_V;                                                  
-    float den = SENSOR_VCC - v;                                                     
-    if (den < 0.001f) return 999.0f;                                                
-    float r_ntc = SENSOR_R_SERIE * (v / den);                                       
+static float ads_para_temperatura(float raw_suavizado) {                                    
+    float v = raw_suavizado * ADS1115_LSB_V;                                                  
+    if (v <= 0.001f) return 999.0f; // Prevenção de divisão por zero                                                
+    
+    // Equação adaptada à lógica do seu código original (NTC no lado VCC)
+    float r_ntc = SENSOR_R_SERIE * ((SENSOR_VCC - v) / v);                                       
     float tk = 1.0f / ((1.0f / (25.0f + 273.15f)) +                                 
                         (1.0f / SENSOR_NTC_BETA) * logf(r_ntc / SENSOR_NTC_R25));   
     return tk - 273.15f;                                                            
@@ -223,7 +209,7 @@ static void processar_estado(void) {
                 ESP_LOGW(TAG, "Polaridade invertida!");                     
                 estadoAtual = ERRO_INVERTIDA;                               
             } else if (tensaoBateria > V_BAT_MINIMA && tensaoBateria < V_BAT_MAXIMA) { 
-                ESP_LOGI(TAG, "Bateria detectada: %.3fV", tensaoBateria);   
+                ESP_LOGI(TAG, "Bateria detetada: %.3fV", tensaoBateria);   
                 estadoAtual = AVALIANDO;                                    
             }                           
             break;                      
@@ -254,6 +240,7 @@ static void processar_estado(void) {
             bool delta_v   = (tensaoMaxima - tensaoBateria) >= DELTA_V_THRESHOLD; 
             bool temp_alta = (temperaturaAtual >= MAX_TEMP_CELSIUS); 
             bool removida  = (tensaoBateria < V_DESCONECTADA);      
+            
             if (removida) {                                         
                 ESP_LOGW(TAG, "Bateria removida durante carga.");   
                 pwm_ajustar_duty(0.0f);                             
@@ -283,40 +270,74 @@ static void processar_estado(void) {
 /* ============================================================================
  * PONTO DE ENTRADA
  * ============================================================================ */
-void app_main(void) {                                           
-    vTaskDelay(pdMS_TO_TICKS(1000));                            
-    ESP_LOGI(TAG, "=== CARREGADOR NiCd — TEST_BATERRY ===");    
-    printf("\n=== CARREGADOR NiCd — TEST_BATERRY ===\n"); 
-
-    // Relé                            
-    gpio_reset_pin(PINO_RELE);                                          
-    gpio_set_direction(PINO_RELE, GPIO_MODE_OUTPUT);                    
-    gpio_set_level(PINO_RELE, 0);                                       
+void app_main(void) {   
     
-    // Componentes                         
-    pwm_inicializar(PINO_PWM_ALTO, PINO_PWM_BAIXO);                     
-    pid_inicializar(CORRENTE_ALVO, PWM_MIN_DUTY_PCT, PWM_MAX_DUTY_PCT); 
-    init_i2c();                                                         
+    // Inicialização obrigatória da memória NVS para o Bluetooth
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
 
-    ESP_LOGI(TAG, "Sistema pronto. Aguardando bateria...");         
-    printf("Sistema pronto. Aguardando bateria...\n\n"); 
-    //Analisador logico interno para capturar sinais do pwm
-    static bool ja_capturou_sinal = false;
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    ESP_LOGI(TAG, "=== CARREGADOR NiCd - TEST_BATERRY ===");
+    printf("\n=== CARREGADOR NiCd - TEST_BATERRY ===\n");
+
+    // Relé
+    gpio_reset_pin(PINO_RELE);
+    gpio_set_direction(PINO_RELE, GPIO_MODE_OUTPUT);
+    gpio_set_level(PINO_RELE, 0);
+
+    // Componentes
+    pwm_inicializar(PINO_PWM_ALTO, PINO_PWM_BAIXO);
+    pid_inicializar(CORRENTE_ALVO, PWM_MIN_DUTY_PCT, PWM_MAX_DUTY_PCT);
+    init_i2c();
+
+    // 2. Inicia o rádio Bluetooth e o modo de visibilidade
+    ble_inicializar();
+
+    ESP_LOGI(TAG, "Sistema pronto. Aguardando bateria...");
+    printf("Sistema pronto. Aguardando bateria...\n\n");
+
+    //static bool ja_capturou_sinal = false;
+    static float temp_raw_suavizado = 0.0f;
+    static bool primeira_leitura_temp = true;
 
     while (1) {                                                     
-        tensaoBateria    = ads_para_tensao(ler_ads1115(0));         
-        correnteCarga    = ads_para_corrente(ler_ads1115(1));       
-        temperaturaAtual = ads_para_temperatura(ler_ads1115(2));    
+        // Leitura isolada sem crosstalk na ordem física atual
+        int16_t raw_temp     = ler_ads1115(0); // AIN0
+        int16_t raw_tensao   = ler_ads1115(1); // AIN1
+        int16_t raw_corrente = ler_ads1115(2); // AIN2
+
+        // Aplicação do Filtro Passa-Baixa Exponencial (EMA) na Temperatura
+        if (primeira_leitura_temp) {
+            temp_raw_suavizado = (float)raw_temp;
+            primeira_leitura_temp = false;
+        } else {
+            temp_raw_suavizado = ((float)raw_temp * FILTRO_ALFA) + (temp_raw_suavizado * (1.0f - FILTRO_ALFA));
+        }
+
+        // Conversão para Grandezas Físicas
+        temperaturaAtual = ads_para_temperatura(temp_raw_suavizado); 
+        tensaoBateria    = ads_para_tensao(raw_tensao);         
+        correnteCarga    = ads_para_corrente(raw_corrente);       
 
         processar_estado();                                                         
         
-        ESP_LOGI(TAG, "[%s] Vbat=%.3fV  I=%.3fA  T=%.1f°C  Duty=%.1f%%",            
-                 nome_estado(estadoAtual),                                          
-                 tensaoBateria, correnteCarga, temperaturaAtual, dutyCycleAtual);   
+        // Gatilho do Analisador VCD
+        // if (estadoAtual == CARREGANDO && dutyCycleAtual > 5.0f && !ja_capturou_sinal) {
+        //     capturar_sinais_vcd();
+        //     ja_capturou_sinal = true;
+        // }
 
-        printf("[%s] Vbat=%.3fV  I=%.3fA  T=%.1f°C  Duty=%.1f%%\n",            
-                 nome_estado(estadoAtual),                                          
-                 tensaoBateria, correnteCarga, temperaturaAtual, dutyCycleAtual);    
+        // ESP_LOGI(TAG, "[%s] Vbat=%.3fV  I=%.3fA  T=%.1f°C  Duty=%.1f%%",            
+        //          nome_estado(estadoAtual),                                          
+        //          tensaoBateria, correnteCarga, temperaturaAtual, dutyCycleAtual);   
+
+        // printf("[%s] Vbat=%.3fV  I=%.3fA  T=%.1f°C  Duty=%.1f%%\n",            
+        //          nome_estado(estadoAtual),                                          
+        //          tensaoBateria, correnteCarga, temperaturaAtual, dutyCycleAtual);    
 
         vTaskDelay(pdMS_TO_TICKS(500));         
     }                                   
