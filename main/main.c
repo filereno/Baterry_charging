@@ -324,20 +324,20 @@ void app_main(void) {
         correnteCarga    = ads_para_corrente(raw_corrente);       
 
         processar_estado();                                                         
-        
-        // Gatilho do Analisador VCD
-        // if (estadoAtual == CARREGANDO && dutyCycleAtual > 5.0f && !ja_capturou_sinal) {
-        //     capturar_sinais_vcd();
-        //     ja_capturou_sinal = true;
-        // }
 
-        // ESP_LOGI(TAG, "[%s] Vbat=%.3fV  I=%.3fA  T=%.1f°C  Duty=%.1f%%",            
-        //          nome_estado(estadoAtual),                                          
-        //          tensaoBateria, correnteCarga, temperaturaAtual, dutyCycleAtual);   
+        ESP_LOGI(TAG, "[%s] Vbat=%.3fV  I=%.3fA  T=%.1f°C  Duty=%.1f%%",            
+                 nome_estado(estadoAtual),                                          
+                 tensaoBateria, correnteCarga, temperaturaAtual, dutyCycleAtual);   
 
-        // printf("[%s] Vbat=%.3fV  I=%.3fA  T=%.1f°C  Duty=%.1f%%\n",            
-        //          nome_estado(estadoAtual),                                          
-        //          tensaoBateria, correnteCarga, temperaturaAtual, dutyCycleAtual);    
+        printf("[%s] Vbat=%.3fV  I=%.3fA  T=%.1f°C  Duty=%.1f%%\n",            
+                 nome_estado(estadoAtual),                                          
+                 tensaoBateria, correnteCarga, temperaturaAtual, dutyCycleAtual);  
+
+        // ====================================================================
+        // TRANSMISSÃO BLUETOOTH (TX)
+        // Envia as grandezas físicas processadas acima para o App Flutter
+        // ====================================================================         
+        ble_enviar_dados(tensaoBateria, correnteCarga, temperaturaAtual, dutyCycleAtual);  
 
         vTaskDelay(pdMS_TO_TICKS(500));         
     }                                   
